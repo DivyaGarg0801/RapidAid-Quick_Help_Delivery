@@ -66,6 +66,9 @@ class DatabaseManager:
 
 db = DatabaseManager()
 
+# Supported scheduling algorithms
+ALLOWED_SCHEDULING_ALGORITHMS = ['priority', 'fcfs', 'sjf', 'hrrn']
+
 # Authentication middleware
 def login_required(f):
     @wraps(f)
@@ -151,6 +154,23 @@ class SchedulingAlgorithms:
                 WHEN 'low' THEN 4
             END,
             er.created_at ASC
+        """
+        return db.execute_query(query, (hospital_id,))
+    
+    @staticmethod
+    def hrrn_scheduling(requests, hospital_id):
+        """Highest Response Ratio Next scheduling algorithm (fair, non-preemptive)"""
+        query = """
+        SELECT er.*, p.name as patient_name, p.phone,
+               TIMESTAMPDIFF(MINUTE, er.created_at, NOW()) AS waiting_time,
+               (
+                   (TIMESTAMPDIFF(MINUTE, er.created_at, NOW()) + GREATEST(er.estimated_arrival_time, 1))
+                   / GREATEST(er.estimated_arrival_time, 1)
+               ) AS response_ratio
+        FROM emergency_requests er
+        JOIN patients p ON er.patient_id = p.patient_id
+        WHERE er.hospital_id = %s AND er.status = 'pending'
+        ORDER BY response_ratio DESC, er.created_at ASC
         """
         return db.execute_query(query, (hospital_id,))
     
@@ -371,7 +391,7 @@ def update_hospital_algorithm(hospital_id):
     data = request.get_json() or {}
     algorithm = data.get('algorithm')
 
-    if algorithm not in ['priority', 'fcfs', 'sjf']:
+    if algorithm not in ALLOWED_SCHEDULING_ALGORITHMS:
         return jsonify({'error': 'Invalid algorithm'}), 400
 
     try:
@@ -431,6 +451,8 @@ def create_hospital():
         
         # Set scheduling preference
         algorithm = data.get('scheduling_algorithm', 'priority')
+        if algorithm not in ALLOWED_SCHEDULING_ALGORITHMS:
+            algorithm = 'priority'
         priority_weights = data.get('priority_weights', '{"critical": 4, "high": 3, "medium": 2, "low": 1}')
         
         scheduling_query = """
@@ -446,6 +468,64 @@ def create_hospital():
         
         return jsonify({'message': 'Hospital created successfully', 'hospital_id': hospital_id}), 201
         
+    except Error as e:
+        return jsonify({'error': f'Database error: {str(e)}'}), 500
+
+@app.route('/api/hospitals/<int:hospital_id>', methods=['PUT'])
+@role_required('superadmin')
+def update_hospital(hospital_id):
+    data = request.get_json() or {}
+    allowed_fields = [
+        'name', 'address', 'latitude', 'longitude', 'phone',
+        'total_ambulances', 'available_ambulances',
+        'total_doctors', 'available_doctors',
+        'total_rooms', 'available_rooms'
+    ]
+
+    set_clauses = []
+    params = []
+    for field in allowed_fields:
+        if field in data:
+            set_clauses.append(f"{field} = %s")
+            params.append(data[field])
+
+    if not set_clauses:
+        return jsonify({'error': 'No fields to update'}), 400
+
+    params.append(hospital_id)
+
+    query = f"UPDATE hospitals SET {', '.join(set_clauses)} WHERE hospital_id = %s"
+    try:
+        db.execute_query(query, tuple(params), fetch=False)
+
+        if 'user_id' in session:
+            log_query = "INSERT INTO system_logs (user_id, action, details) VALUES (%s, %s, %s)"
+            db.execute_query(
+                log_query,
+                (session['user_id'], 'UPDATE_HOSPITAL', f'Updated hospital {hospital_id}'),
+                fetch=False,
+            )
+
+        return jsonify({'message': 'Hospital updated successfully'})
+    except Error as e:
+        return jsonify({'error': f'Database error: {str(e)}'}), 500
+
+@app.route('/api/hospitals/<int:hospital_id>', methods=['DELETE'])
+@role_required('superadmin')
+def delete_hospital(hospital_id):
+    try:
+        query = "DELETE FROM hospitals WHERE hospital_id = %s"
+        db.execute_query(query, (hospital_id,), fetch=False)
+
+        if 'user_id' in session:
+            log_query = "INSERT INTO system_logs (user_id, action, details) VALUES (%s, %s, %s)"
+            db.execute_query(
+                log_query,
+                (session['user_id'], 'DELETE_HOSPITAL', f'Deleted hospital {hospital_id}'),
+                fetch=False,
+            )
+
+        return jsonify({'message': 'Hospital deleted successfully'})
     except Error as e:
         return jsonify({'error': f'Database error: {str(e)}'}), 500
 
@@ -536,6 +616,8 @@ def get_request_queue(hospital_id):
         requests = SchedulingAlgorithms.fcfs_scheduling(None, hospital_id)
     elif algorithm == 'sjf':
         requests = SchedulingAlgorithms.sjf_scheduling(None, hospital_id)
+    elif algorithm == 'hrrn':
+        requests = SchedulingAlgorithms.hrrn_scheduling(None, hospital_id)
     else:
         requests = []
     
@@ -602,6 +684,49 @@ def assign_ambulance(request_id):
     except Error as e:
         return jsonify({'error': f'Database error: {str(e)}'}), 500
 
+@app.route('/api/emergency_requests/<int:request_id>/complete', methods=['POST'])
+@role_required('hospital_admin')
+def complete_request(request_id):
+    try:
+        request_query = "SELECT * FROM emergency_requests WHERE request_id = %s"
+        request_result = db.execute_query(request_query, (request_id,))
+
+        if not request_result:
+            return jsonify({'error': 'Request not found'}), 404
+
+        emergency_request = request_result[0]
+        if emergency_request['status'] not in ('assigned', 'in_progress'):
+            return jsonify({'error': 'Request is not active'}), 400
+
+        ambulance_id = emergency_request.get('ambulance_id')
+        hospital_id = emergency_request['hospital_id']
+
+        if ambulance_id:
+            update_ambulance_query = "UPDATE ambulances SET status = 'available' WHERE ambulance_id = %s"
+            db.execute_query(update_ambulance_query, (ambulance_id,), fetch=False)
+
+        banker = BankersAlgorithm(hospital_id)
+        banker.release_resources(request_id)
+
+        update_request_query = """
+        UPDATE emergency_requests
+        SET status = 'completed', completed_at = NOW()
+        WHERE request_id = %s
+        """
+        db.execute_query(update_request_query, (request_id,), fetch=False)
+
+        if 'user_id' in session:
+            log_query = "INSERT INTO system_logs (user_id, action, details) VALUES (%s, %s, %s)"
+            db.execute_query(
+                log_query,
+                (session['user_id'], 'COMPLETE_REQUEST', f'Request {request_id} marked completed'),
+                fetch=False,
+            )
+
+        return jsonify({'message': 'Request completed and resources released'})
+    except Error as e:
+        return jsonify({'error': f'Database error: {str(e)}'}), 500
+
 @app.route('/api/ambulances/<int:hospital_id>', methods=['GET'])
 @role_required('hospital_admin')
 def get_ambulances(hospital_id):
@@ -612,12 +737,46 @@ def get_ambulances(hospital_id):
 @app.route('/api/hospitals/<int:hospital_id>/status', methods=['GET'])
 @role_required('hospital_admin', 'superadmin')
 def get_hospital_status(hospital_id):
-    query = "SELECT * FROM hospital_status WHERE hospital_id = %s"
-    result = db.execute_query(query, (hospital_id,))
-    
-    if result:
-        return jsonify(result[0])
-    return jsonify({'error': 'Hospital status not found'}), 404
+    hospital_query = """
+    SELECT hospital_id, name, total_ambulances, available_ambulances,
+           total_doctors, available_doctors,
+           total_rooms, available_rooms
+    FROM hospitals
+    WHERE hospital_id = %s
+    """
+    hospital = db.execute_query(hospital_query, (hospital_id,))
+
+    if not hospital:
+        return jsonify({'error': 'Hospital not found'}), 404
+
+    hospital_data = hospital[0]
+
+    stats_query = """
+    SELECT 
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_requests,
+        COUNT(CASE WHEN status IN ('assigned', 'in_progress') THEN 1 END) as active_requests,
+        AVG(CASE 
+                WHEN completed_at IS NOT NULL 
+                THEN TIMESTAMPDIFF(MINUTE, created_at, completed_at)
+            END) as avg_response_time
+    FROM emergency_requests
+    WHERE hospital_id = %s
+    """
+    stats = db.execute_query(stats_query, (hospital_id,))
+    stats_data = stats[0] if stats else {}
+
+    response = {
+        **hospital_data,
+        'active_ambulances': max(
+            0,
+            hospital_data['total_ambulances'] - hospital_data['available_ambulances']
+        ),
+        'pending_requests': stats_data.get('pending_requests', 0),
+        'active_requests': stats_data.get('active_requests', 0),
+        'avg_response_time': stats_data.get('avg_response_time')
+    }
+
+    return jsonify(response)
 
 # Patient Routes
 @app.route('/api/patient/requests', methods=['GET'])

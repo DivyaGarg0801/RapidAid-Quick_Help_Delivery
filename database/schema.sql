@@ -30,7 +30,7 @@ CREATE TABLE hospitals (
     available_doctors INT DEFAULT 10,
     total_rooms INT DEFAULT 20,
     available_rooms INT DEFAULT 20,
-    scheduling_algorithm ENUM('priority', 'fcfs', 'sjf') DEFAULT 'priority',
+    scheduling_algorithm ENUM('priority', 'fcfs', 'sjf', 'hrrn') DEFAULT 'priority',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_location (latitude, longitude),
@@ -132,7 +132,7 @@ CREATE TABLE system_logs (
 CREATE TABLE hospital_scheduling (
     preference_id INT AUTO_INCREMENT PRIMARY KEY,
     hospital_id INT UNIQUE NOT NULL,
-    algorithm ENUM('priority', 'fcfs', 'sjf') NOT NULL DEFAULT 'priority',
+    algorithm ENUM('priority', 'fcfs', 'sjf', 'hrrn') NOT NULL DEFAULT 'priority',
     priority_weights JSON, -- Store weights for different priority levels
     max_queue_size INT DEFAULT 50,
     average_response_time DECIMAL(8, 2) DEFAULT 0, -- in minutes
@@ -155,4 +155,4 @@ INSERT INTO hospitals (name, address, latitude, longitude, phone, total_ambulanc
 INSERT INTO hospital_scheduling (hospital_id, algorithm, priority_weights) VALUES 
 (1, 'priority', '{"critical": 4, "high": 3, "medium": 2, "low": 1}'),
 (2, 'fcfs', '{}'),
-(3, 'sjf', '{}');
+(3, 'hrrn', '{}');

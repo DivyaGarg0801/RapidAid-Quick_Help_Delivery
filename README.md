@@ -6,7 +6,7 @@ RapidAid is an intelligent emergency response platform that combines OS scheduli
 
 - **Patient Requests** → Treated as processes
 - **Resources** → Ambulances, doctors, hospital rooms (limited resources)
-- **Scheduling Algorithms** → Priority, FCFS, SJF (based on distance)
+- **Scheduling Algorithms** → Priority, FCFS, SJF (distance-aware), HRRN (fairness-focused)
 - **Deadlock Avoidance** → Banker's Algorithm for resource allocation
 
 ## System Architecture
@@ -19,21 +19,20 @@ RapidAid is an intelligent emergency response platform that combines OS scheduli
 - Request submission and tracking
 
 ### 2. Hospital Dashboard
-- Queue management with configurable scheduling algorithms
-- Real-time ambulance allocation
-- Resource monitoring (total, available, active ambulances)
+- Queue management with configurable scheduling algorithms (Priority / FCFS / SJF / HRRN)
+- Real-time ambulance allocation with fairness-aware HRRN option
+- Resource monitoring (total, available, active ambulances & doctors)
 - Deadlock prevention using Banker's Algorithm
 
 ### 3. SuperAdmin Dashboard
-- Hospital management (CRUD operations)
+- Hospital management (full CRUD operations)
 - System-wide statistics
 - Global request flow monitoring
 
 ## Technology Stack
 
-### Frontend
 - **React.js** - Component-based UI
-- **Interactive Maps** - Real-time location services
+- **Interactive Maps** - Real-time location services with dual patient/hospital markers
 - **Responsive Design** - Modern UI/UX
 
 ### Backend
@@ -78,6 +77,7 @@ rapidaid1/
 - **Priority**: Emergency severity-based allocation
 - **FCFS**: First Come First Serve for fair queuing
 - **SJF**: Shortest Job First based on distance optimization
+- **HRRN**: Highest Response Ratio Next to enforce fairness for waiting patients
 
 ### Banker's Algorithm
 - Resource allocation safety checks
