@@ -117,11 +117,6 @@ export const PatientDashboard = () => {
 
   const hasMapData = location.hasLocation && selectedHospital;
 
-  useEffect(() => {
-    if (hasMapData && mapRef.current) {
-      mapRef.current.setView([location.lat, location.lon]);
-    }
-  }, [hasMapData, location.lat, location.lon, selectedHospitalId]);
 
   const autoSelectNearest = () => {
     if (!location.hasLocation || hospitalsWithDistance.length === 0) return;
@@ -210,27 +205,33 @@ export const PatientDashboard = () => {
           {hasMapData && (
             <div className="map-container">
               <MapContainer
-                center={[location.lat, location.lon]}
-                zoom={13}
-                style={{ height: 300, width: '100%' }}
-                whenCreated={mapInstance => {
-                  mapRef.current = mapInstance;
-                }}
-              >
-                <TileLayer
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  attribution="&copy; OpenStreetMap contributors"
-                />
-                <Marker position={[location.lat, location.lon]} />
-                <Marker position={[selectedHospital.latitude, selectedHospital.longitude]} />
-                <Polyline
-                  positions={[
-                    [location.lat, location.lon],
-                    [selectedHospital.latitude, selectedHospital.longitude],
-                  ]}
-                  color="#ff4d4f"
-                />
-              </MapContainer>
+  key={selectedHospitalId}
+  center={[location.lat, location.lon]}
+  zoom={13}
+  style={{ height: 300, width: '100%' }}
+  whenCreated={(map) => {
+    // Store map only once
+    if (!mapRef.current) {
+      mapRef.current = map;
+    }
+  }}
+>
+  <TileLayer
+    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+    attribution="&copy; OpenStreetMap contributors"
+  />
+
+  <Marker position={[location.lat, location.lon]} />
+  <Marker position={[selectedHospital.latitude, selectedHospital.longitude]} />
+
+  <Polyline
+    positions={[
+      [location.lat, location.lon],
+      [selectedHospital.latitude, selectedHospital.longitude],
+    ]}
+  />
+</MapContainer>
+
             </div>
           )}
 

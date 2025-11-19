@@ -25,44 +25,97 @@ class DatabaseManager:
     def __init__(self):
         self.connection = None
         self.connect()
-    
-    def connect(self):
-        try:
-            self.connection = mysql.connector.connect(**DB_CONFIG)
-            if self.connection.is_connected():
-                print("Connected to MySQL database")
-        except Error as e:
-            print(f"Error connecting to MySQL: {e}")
-    
-    def execute_query(self, query, params=None, fetch=True):
-        try:
-            # Ensure we have a live connection before executing any query
-            if self.connection is None or not self.connection.is_connected():
-                self.connect()
 
-            if self.connection is None or not self.connection.is_connected():
-                print("Error: Could not connect to MySQL. Check DB_CONFIG and MySQL server.")
-                return None
-            
+    def connect(self):
+        """Establish a fresh MySQL connection. Keep connection None on failure."""
+        try:
+            # small timeout helps detect dead server quickly
+            self.connection = mysql.connector.connect(**DB_CONFIG, autocommit=True, connection_timeout=10)
+            print("Connected to MySQL")
+        except Exception as e:
+            print("Error connecting to MySQL:", repr(e))
+            self.connection = None
+
+    def ensure_connection(self):
+        """Ensure connection is alive; reconnect if broken."""
+        if self.connection is None:
+            self.connect()
+            return
+
+        try:
+            # Ping server; reconnect=True attempts an automatic reconnect
+            self.connection.ping(reconnect=True, attempts=2, delay=0.5)
+        except Exception as e:
+            print("Ping failed, reconnecting:", repr(e))
+            self.connect()
+
+    def execute_query(self, query, params=None, fetch=True):
+        """
+        Execute SQL query with safe reconnect + single retry.
+        Returns fetched rows (list of dicts) or lastrowid (when fetch=False).
+        Raises Exception on unrecoverable failure.
+        """
+        # normalize params to tuple (mysql-connector expects sequence)
+        if params is None:
+            params_tuple = ()
+        elif isinstance(params, (list, tuple)):
+            params_tuple = tuple(params)
+        else:
+            # single value -> wrap in tuple
+            params_tuple = (params,)
+
+        # Ensure there is a usable connection
+        self.ensure_connection()
+        if self.connection is None:
+            raise RuntimeError("Database connection not available")
+
+        try:
             cursor = self.connection.cursor(dictionary=True)
-            cursor.execute(query, params)
-            
+            cursor.execute(query, params_tuple)
             if fetch:
                 result = cursor.fetchall()
                 cursor.close()
                 return result
             else:
                 last_id = cursor.lastrowid
-                self.connection.commit()
+                # commit already enabled by autocommit, but keep commit for safety
+                try:
+                    self.connection.commit()
+                except Exception:
+                    pass
                 cursor.close()
                 return last_id
-        except Error as e:
-            print(f"Error executing query: {e}")
-            return None
-    
-    def close(self):
-        if self.connection and self.connection.is_connected():
-            self.connection.close()
+
+        except Exception as first_err:
+            # Log the first error
+            print("First query attempt failed:", repr(first_err))
+
+            # Try to reconnect and retry once
+            try:
+                self.connect()
+                if self.connection is None:
+                    raise RuntimeError("Reconnect failed")
+
+                cursor = self.connection.cursor(dictionary=True)
+                cursor.execute(query, params_tuple)
+                if fetch:
+                    result = cursor.fetchall()
+                    cursor.close()
+                    return result
+                else:
+                    last_id = cursor.lastrowid
+                    try:
+                        self.connection.commit()
+                    except Exception:
+                        pass
+                    cursor.close()
+                    return last_id
+
+            except Exception as second_err:
+                # Give a clear error (do NOT swallow)
+                print("Retry query attempt failed:", repr(second_err))
+                # Re-raise an exception so routes can return 500 and log the error
+                raise
 
 db = DatabaseManager()
 
@@ -89,9 +142,12 @@ def role_required(*allowed_roles):
             query = "SELECT role FROM users WHERE user_id = %s"
             result = db.execute_query(query, (user_id,))
             
-            if not result or result[0]['role'] not in allowed_roles:
+            if result is None:
+                return jsonify({'error': 'Database error'}), 500
+
+            if len(result) == 0 or result[0]['role'] not in allowed_roles:
                 return jsonify({'error': 'Insufficient permissions'}), 403
-            
+
             return f(*args, **kwargs)
         return decorated_function
     return decorator
