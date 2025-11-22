@@ -23,99 +23,59 @@ DB_CONFIG = {
 
 class DatabaseManager:
     def __init__(self):
-        self.connection = None
-        self.connect()
+        self.config = DB_CONFIG
 
-    def connect(self):
-        """Establish a fresh MySQL connection. Keep connection None on failure."""
-        try:
-            # small timeout helps detect dead server quickly
-            self.connection = mysql.connector.connect(**DB_CONFIG, autocommit=True, connection_timeout=10)
-            print("Connected to MySQL")
-        except Exception as e:
-            print("Error connecting to MySQL:", repr(e))
-            self.connection = None
-
-    def ensure_connection(self):
-        """Ensure connection is alive; reconnect if broken."""
-        if self.connection is None:
-            self.connect()
-            return
-
-        try:
-            # Ping server; reconnect=True attempts an automatic reconnect
-            self.connection.ping(reconnect=True, attempts=2, delay=0.5)
-        except Exception as e:
-            print("Ping failed, reconnecting:", repr(e))
-            self.connect()
+    def get_connection(self):
+        """Always return a fresh, independent connection."""
+        return mysql.connector.connect(**self.config)
 
     def execute_query(self, query, params=None, fetch=True):
-        """
-        Execute SQL query with safe reconnect + single retry.
-        Returns fetched rows (list of dicts) or lastrowid (when fetch=False).
-        Raises Exception on unrecoverable failure.
-        """
-        # normalize params to tuple (mysql-connector expects sequence)
+        # normalize params to tuple
         if params is None:
             params_tuple = ()
         elif isinstance(params, (list, tuple)):
             params_tuple = tuple(params)
         else:
-            # single value -> wrap in tuple
             params_tuple = (params,)
 
-        # Ensure there is a usable connection
-        self.ensure_connection()
-        if self.connection is None:
-            raise RuntimeError("Database connection not available")
+        conn = None
+        cursor = None
 
         try:
-            cursor = self.connection.cursor(dictionary=True)
+            conn = self.get_connection()
+            cursor = conn.cursor(dictionary=True)
+
             cursor.execute(query, params_tuple)
+
             if fetch:
                 result = cursor.fetchall()
                 cursor.close()
+                conn.close()
                 return result
             else:
                 last_id = cursor.lastrowid
-                # commit already enabled by autocommit, but keep commit for safety
-                try:
-                    self.connection.commit()
-                except Exception:
-                    pass
+                conn.commit()
                 cursor.close()
+                conn.close()
                 return last_id
 
-        except Exception as first_err:
-            # Log the first error
-            print("First query attempt failed:", repr(first_err))
+        except Exception as e:
+            print("Database Error:", repr(e))
 
-            # Try to reconnect and retry once
+            # cleanup
             try:
-                self.connect()
-                if self.connection is None:
-                    raise RuntimeError("Reconnect failed")
-
-                cursor = self.connection.cursor(dictionary=True)
-                cursor.execute(query, params_tuple)
-                if fetch:
-                    result = cursor.fetchall()
+                if cursor:
                     cursor.close()
-                    return result
-                else:
-                    last_id = cursor.lastrowid
-                    try:
-                        self.connection.commit()
-                    except Exception:
-                        pass
-                    cursor.close()
-                    return last_id
+            except:
+                pass
 
-            except Exception as second_err:
-                # Give a clear error (do NOT swallow)
-                print("Retry query attempt failed:", repr(second_err))
-                # Re-raise an exception so routes can return 500 and log the error
-                raise
+            try:
+                if conn:
+                    conn.close()
+            except:
+                pass
+
+            raise
 
 db = DatabaseManager()
 
