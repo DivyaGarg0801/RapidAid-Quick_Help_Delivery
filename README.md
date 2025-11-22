@@ -1,4 +1,4 @@
-# RapidAid - Emergency Response System
+# RapidAid-Quick_Help_Delivery
 
 RapidAid is an intelligent emergency response platform that combines OS scheduling principles with healthcare resource management to optimize ambulance dispatch and hospital resource allocation.
 
